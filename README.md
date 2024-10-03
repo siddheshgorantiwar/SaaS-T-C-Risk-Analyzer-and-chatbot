@@ -46,7 +46,3 @@ The SaaS T&C Risk Analyzer and Chatbot is an AI-powered tool designed to analyze
 ## Troubleshooting
 
 - **Error Handling**: If an error occurs, ensure that the API key is correctly entered and that the T&C text is valid. Check the error messages for guidance on resolving issues.
-
-## Contact
-
-For questions or support, please contact [Your Contact Information].
