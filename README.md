@@ -18,7 +18,7 @@ The SaaS T&C Risk Analyzer and Chatbot is an AI-powered tool designed to analyze
     - Combines retrieval with LLM-powered reasoning for high-accuracy, cited answers.
 - **Binary Quantization & FAISS**:
     - Embedding vectors from T&C chunks are compressed from float32 to 1-bit binary signatures.
-    - Results in a ~32x reduction in memory usage and 20–40x faster retrieval for question-answering ([see benchmarking in recent research](https://huggingface.co/blog/embedding-quantization)).
+    - Results in a ~64x reduction in memory with float64 usage and 20–40x faster retrieval for question-answering ([see benchmarking in recent research](https://huggingface.co/blog/embedding-quantization)).
     - Enables efficient handling of large T&C documents or corpora directly in memory.
 - **PDF Support & Configurable Chunking**:
     - Users can upload PDF files; the document is chunked, embedded, and indexed with FAISS.
