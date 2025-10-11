@@ -1,180 +1,135 @@
 import os
-import faiss
-import numpy as np
 import streamlit as st
-from sentence_transformers import SentenceTransformer
+import tempfile
 from langchain_groq import ChatGroq
-from langchain.prompts import ChatPromptTemplate
-from langchain.output_parsers import PydanticOutputParser
-from pydantic import BaseModel, Field
-from typing import List
+from langchain.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage, BaseMessage
+from langgraph.graph import StateGraph, END
+from langgraph.prebuilt import ToolNode
+from typing import TypedDict
+from helper_functions.rag import Preprocess  # Use your RAG class
 
-class RiskItem(BaseModel):
-    clause: str = Field(description="The name or type of the clause")
-    risk: str = Field(description="Description of the potential risk or issue")
-    recommendation: str = Field(description="Recommendation for addressing the risk")
+st.sidebar.title("API Configuration")
+api_key = st.sidebar.text_input("Enter your ChatGroq API Key:", type="password")
+if not api_key:
+    st.info("Enter your ChatGroq API key in the sidebar to proceed.")
+    st.stop()
 
-class RiskAnalysis(BaseModel):
-    risks: List[RiskItem] = Field(description="List of identified risks in the T&C")
-
-output_parser = PydanticOutputParser(pydantic_object=RiskAnalysis)
-
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-
-def chunk_text(text, max_length=512):
-    sentences = text.split('.')
-    chunks = []
-    current_chunk = []
-    current_length = 0
-
-    for sentence in sentences:
-        sentence_length = len(sentence.split())
-        if current_length + sentence_length > max_length:
-            chunks.append(" ".join(current_chunk))
-            current_chunk = [sentence]
-            current_length = sentence_length
-        else:
-            current_chunk.append(sentence)
-            current_length += sentence_length
-
-    if current_chunk:
-        chunks.append(" ".join(current_chunk))
-
-    return chunks
-
-def embed_text_chunks(chunks):
-    embeddings = embedding_model.encode(chunks)
-    faiss_index = faiss.IndexFlatL2(embeddings.shape[1])
-    faiss_index.add(np.array(embeddings))
-    return faiss_index, embeddings
-
-def search_similar_chunks(query, faiss_index, chunks, embeddings, top_k=3):
-    query_embedding = embedding_model.encode([query])
-    _, indices = faiss_index.search(np.array(query_embedding), top_k)
-    return [chunks[i] for i in indices[0]]
-
-template = """
-You are an AI legal assistant named Janie, specialized in analyzing SaaS Terms and Conditions (T&C) for potential risks to buyers.
-Your task is to review the given T&C and identify any clauses that may pose risks or issues for the buyer.
-
-Please analyze the following T&C text and provide a list of potential risks, focusing on the following key areas:
-1. Data ownership and usage rights
-2. Service level agreements (SLAs) and uptime guarantees
-3. Liability limitations and indemnification
-4. Termination clauses and data retrieval
-5. Privacy and security measures
-6. Intellectual property rights
-7. Payment terms and pricing changes
-8. Warranty and disclaimer of warranties
-9. Compliance with regulations (e.g., GDPR, CCPA)
-10. Dispute resolution and governing law
-
-T&C Text:
-{tc_text}
-
-{format_instructions}
-
-Provide your analysis in a clear, concise manner, highlighting the most critical issues first.
-"""
-
-prompt = ChatPromptTemplate.from_template(template)
-
-st.sidebar.title("Configuration")
-api_key = st.sidebar.text_input("Enter your Groq API Key:", type="password")
-
-st.sidebar.markdown("""
-## How to use this tool:
-1. Enter your Groq API Key in the field above.
-2. Paste the full text of the SaaS Terms and Conditions in the main text area.
-3. Click the "Analyze T&C" button.
-4. Review the identified risks and recommendations.
-5. Use the chat feature to ask follow-up questions.
+st.title("SaaS T&C Risk Analyzer (Agentic RAG Demo)")
+st.markdown("""
+Upload a SaaS Terms & Conditions PDF.  
+Ask legal/compliance questions.
 """)
+uploaded_file = st.file_uploader("Upload a SaaS T&C PDF document:", type=["pdf"])
 
-st.title("SaaS T&C Risk Analyzer")
+USE_BINARY = st.checkbox("Use binary quantization for embeddings (32x smaller, faster)", value=True)
+chunk_size = st.slider('Chunk size (words)', min_value=100, max_value=2000, value=500, step=50)
+chunk_overlap = st.slider('Chunk overlap (words)', min_value=0, max_value=500, value=50, step=10)
 
-tc_text = st.text_area("Enter the SaaS Terms and Conditions text here:", height=300)
+if uploaded_file is not None:
+    # Save the uploaded file to a temp location
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmpfile:
+        tmpfile.write(uploaded_file.read())
+        pdf_path = tmpfile.name
 
-if st.button("Analyze T&C"):
-    if api_key and tc_text:
-        with st.spinner("Analyzing T&C..."):
-            os.environ["GROQ_API_KEY"] = api_key
+    # Only process if not already done for this file
+    last_pdf_hash = st.session_state.get("last_pdf_hash")
+    import hashlib
+    pdf_hash = hashlib.md5(open(pdf_path, 'rb').read()).hexdigest()
+    reprocess = (last_pdf_hash != pdf_hash or 
+                 st.session_state.get("last_chunk_size") != chunk_size or 
+                 st.session_state.get("last_chunk_overlap") != chunk_overlap or
+                 st.session_state.get("last_use_binary") != USE_BINARY)
+    
+    if reprocess:
+        st.session_state.prep = Preprocess(pdf_path)
+        st.session_state.chunks = st.session_state.prep.chunk(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        st.session_state.prep.vectorize(binary_quantize=USE_BINARY)
+        st.session_state.prep.add_to_faiss(index_path="faiss_index", use_binary=USE_BINARY)
+        st.session_state["last_pdf_hash"] = pdf_hash
+        st.session_state["last_chunk_size"] = chunk_size
+        st.session_state["last_chunk_overlap"] = chunk_overlap
+        st.session_state["last_use_binary"] = USE_BINARY
+        st.success("Document processed!")
+    st.markdown(f"**Document processed** with {len(st.session_state.chunks)} chunks.")
+else:
+    st.info("Upload a PDF to analyze!")
+    st.stop()
 
-            try:
-                # Chunk the T&C text
-                chunks = chunk_text(tc_text)
 
-                # Embed chunks and create FAISS index
-                faiss_index, embeddings = embed_text_chunks(chunks)
+@tool
+def retrieve_chunks(query: str) -> str:
+    """Returns the 3 most relevant chunks for the user's query."""
+    results = st.session_state.prep.search(
+        query=query,
+        top_k=3,
+        use_binary=USE_BINARY,
+        index_path="faiss_index"
+    )
+    if not results:
+        return "No relevant information found."
+    return "\n\n".join([f"[Chunk {i+1}] {res['text']}" for i, res in enumerate(results)])
 
-                # Perform similarity search for most relevant chunks
-                relevant_chunks = search_similar_chunks(tc_text, faiss_index, chunks, embeddings)
+FEW_SHOTS = [
+    HumanMessage(content="List clauses relating to data ownership in this T&C."),
+    AIMessage(content="Sure! Searching the document for relevant clauses..."),
+    SystemMessage(content="[Chunk 1] Data is owned by the customer. [Chunk 2] The provider may aggregate data for analytics."),
+    AIMessage(content="Here are the relevant clauses:\n- [Chunk 1] Data is owned by the customer.\n- [Chunk 2] The provider may aggregate data for analytics.")
+]
 
-                # Prepare the retrieved text as input to the LLM
-                retrieved_text = " ".join(relevant_chunks)
+AGENT_SYSTEM_PROMPT = """You are Janie, an AI legal assistant. Use the `retrieve_chunks` tool to answer user's questions about the SaaS Terms & Conditions (T&C). Reason about the question, decide what information you need, then retrieve and synthesize an answer with concrete citations."""
 
-                # Format messages with the prompt
-                messages = prompt.format_messages(
-                    tc_text=retrieved_text,
-                    format_instructions=output_parser.get_format_instructions()
-                )
+class AgentState(TypedDict):
+    messages: list[BaseMessage]
 
-                # Call the Groq LLM model
-                model = ChatGroq(model_name="mixtral-8x7b-32768")
-                response = model.invoke(messages)
+def call_model(state: AgentState):
+    messages = [SystemMessage(content=AGENT_SYSTEM_PROMPT)]
+    messages += FEW_SHOTS
+    messages += state['messages']
+    for i, msg in enumerate(messages):
+        print(i, type(msg))
+        assert isinstance(msg, (HumanMessage, AIMessage, SystemMessage)), "Invalid message type!"
 
-                # Parse the LLM output
-                parsed_output = output_parser.parse(response.content)
+    llm = ChatGroq(model_name="llama3-70b-8192", temperature=0,api_key=api_key)
+    # Ensure all in messages are valid types
+    for msg in messages:
+        assert isinstance(msg, (HumanMessage, SystemMessage, AIMessage)), f"Found wrong type: {type(msg)}"
 
-                # Display the identified risks
-                st.subheader("Identified Risks:")
-                for risk in parsed_output.risks:
-                    with st.expander(risk.clause):
-                        st.write(f"**Risk:** {risk.risk}")
-                        st.write(f"**Recommendation:** {risk.recommendation}")
-                
-                st.session_state['tc_text'] = tc_text
+    response = llm.invoke(messages, tools=[retrieve_chunks])
 
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
-    elif not api_key:
-        st.error("Please enter your Groq API Key in the sidebar.")
-    else:
-        st.error("Please enter the T&C text to analyze.")
+    return {"messages": [response]}
 
-# Chat feature for follow-up questions
-st.subheader("Chat with Janie")
-chat_input = st.text_input("Type your message here:")
 
-if st.button("Send"):
-    if api_key and chat_input:
-        with st.spinner("Sending message..."):
-            try:
-                model = ChatGroq(model_name="mixtral-8x7b-32768")
+def should_continue(state: AgentState):
+    last_msg = state["messages"][-1]
+    if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
+        return "continue"
+    return "end"
 
-                tc_text = st.session_state.get('tc_text', '')
-                if tc_text:
-                    # Retrieve relevant chunks for the chat query
-                    relevant_chunks = search_similar_chunks(chat_input, faiss_index, chunks, embeddings)
-                    retrieved_text = " ".join(relevant_chunks)
+workflow = StateGraph(AgentState)
+workflow.add_node("agent", call_model)
+workflow.add_node("tools", ToolNode([retrieve_chunks]))
+workflow.set_entry_point("agent")
+workflow.add_conditional_edges("agent", should_continue, {"continue": "tools", "end": END})
+workflow.add_edge("tools", "agent")
+agent = workflow.compile()
 
-                    rag_prompt = f"""
-                    You are an AI legal assistant named Janie. Based on the provided T&C text, answer the following question:
-                    {chat_input}
-                    T&C Text:
-                    {retrieved_text}
-                    """
+user_query = st.text_area("Type your legal/contractual question here:", height=120)
+if st.button("Ask Janie"):
+    chat_history = [HumanMessage(content=user_query)]
+    with st.spinner("Agent reasoning and answering..."):
+        for event in agent.stream({"messages": chat_history}, stream_mode="values"):
+            for value in event.values():
+                if isinstance(value, dict) and "messages" in value:
+                    latest = value["messages"][-1]
+                    if isinstance(latest, AIMessage) and not hasattr(latest, "tool_calls"):
+                        st.markdown(f"**Janie:** {latest.content}")
 
-                    messages = [{'role': 'user', 'content': rag_prompt}]
-                    response = model.invoke(messages)
-
-                    st.write(f"**Assistant:** {response.content}")
-                else:
-                    st.error("No T&C text available for retrieval.")
-                
-            except Exception as e:
-                st.error(f"An error occurred: {e}")
-    elif not api_key:
-        st.error("Please enter your Groq API Key in the sidebar.")
-    else:
-        st.error("Please enter a message to send.")
+if st.checkbox("Show top chunks for your last query"):
+    res = st.session_state.prep.search(
+        query=user_query,
+        top_k=3,
+        use_binary=USE_BINARY,
+        index_path="faiss_index"
+    )
+    st.write(res)

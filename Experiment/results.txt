@@ -1,0 +1,27 @@
+===== With Binary Quantization =====
+Using IndexBinaryFlat (dataset size: 76 < 1000)
+✓ Added 76 binary vectors to FAISS
+  Index saved to: faiss_index_bin_binary.index
+Binary embeddings shape: (76, 96)
+Binary embedding array memory: 7.12 KB
+Peak process memory during binary quant pipeline: 250428.74 KB
+Retrieval time with binary quantization: 4765.94 ms
+
+===== Without Binary Quantization =====
+Using IndexFlatL2 (dataset size: 76 < 1000)
+✓ Added 76 float vectors to FAISS
+  Index saved to: faiss_index_flt_float.index
+Float embeddings shape: (76, 768)
+Float embedding array memory: 456.00 KB
+Peak process memory during float pipeline: 7410.44 KB
+Retrieval time without binary quantization: 4952.48 ms
+
+===== Summary =====
+Embedding array memory (Binary): 7.12 KB
+Embedding array memory (Float):  456.00 KB
+Peak process memory (Binary run): 250428.74 KB
+Peak process memory (Float run):  7410.44 KB
+Retrieval time (Binary):   4765.94 ms
+Retrieval time (Float):    4952.48 ms
+Embedding memory reduction (float/binary): 64.00x
+Retrieval speedup (float/binary): 1.04x
