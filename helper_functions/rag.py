@@ -139,47 +139,89 @@ class Preprocess:
         return self.faiss_index
 
     def search(self, query, top_k=5, use_binary=True, index_path="faiss_index"):
+    
         from langchain_huggingface.embeddings import HuggingFaceEmbeddings
         import numpy as np
         import faiss
         import pickle
-        
+        from sklearn.metrics.pairwise import cosine_similarity
+
         if self.texts is None:
             with open(f"{index_path}_texts.pkl", "rb") as f:
                 self.texts = pickle.load(f)
-        
+
         if self.faiss_index is None:
             if use_binary:
                 self.faiss_index = faiss.read_index_binary(f"{index_path}_binary.index")
             else:
                 self.faiss_index = faiss.read_index(f"{index_path}_float.index")
-        
-        embeddings = HuggingFaceEmbeddings(
+
+        embeddings_model = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-mpnet-base-v2"
         )
-        query_embedding = embeddings.embed_query(query)
-        
-        if use_binary:
-            query_array = np.array([query_embedding])
-            query_binary = np.packbits(
-                np.where(query_array >= 0, 1, 0), 
-                axis=1
-            )
-            
-            distances, indices = self.faiss_index.search(query_binary, top_k)
-            
-        else:
+        query_embedding = embeddings_model.embed_query(query)
+
+        if not use_binary:
             query_array = np.array([query_embedding]).astype('float32')
             distances, indices = self.faiss_index.search(query_array, top_k)
-        
+
+            results = []
+            for i, (dist, idx) in enumerate(zip(distances[0], indices[0])):
+                if idx != -1:
+                    results.append({
+                        'rank': i + 1,
+                        'text': self.texts[idx],
+                        'distance': float(dist),
+                        'index': int(idx)
+                    })
+            return results
+
+
+        m = 4
+        prefetch_k = m * top_k
+
+        query_array = np.array([query_embedding])
+        query_binary = np.packbits(np.where(query_array >= 0, 1, 0), axis=1)
+
+        distances, indices = self.faiss_index.search(query_binary, prefetch_k)
+
+        candidate_indices = indices[0]
+        candidate_distances = distances[0]
+
+        valid_candidates = [
+            (idx, dist)
+            for idx, dist in zip(candidate_indices, candidate_distances)
+            if idx != -1
+        ]
+
+        if not valid_candidates:
+            print("No valid candidates found.")
+            return []
+
+        if self.embeddings is None:
+            raise ValueError("Float embeddings not found in memory for re-ranking.")
+
+        candidate_vectors = np.array([self.embeddings[idx] for idx, _ in valid_candidates])
+        query_vector = np.array(query_embedding).reshape(1, -1)
+
+        cosine_scores = cosine_similarity(query_vector, candidate_vectors)[0]
+
+        ranked_candidates = sorted(
+            [(valid_candidates[i][0], cosine_scores[i]) for i in range(len(valid_candidates))],
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        top_final = ranked_candidates[:top_k]
+
         results = []
-        for i, (dist, idx) in enumerate(zip(distances[0], indices[0])):
-            if idx != -1:  
-                results.append({
-                    'rank': i + 1,
-                    'text': self.texts[idx],
-                    'distance': float(dist),
-                    'index': int(idx)
-                })
-        
+        for rank, (idx, score) in enumerate(top_final, start=1):
+            results.append({
+                'rank': rank,
+                'text': self.texts[idx],
+                'cosine_score': float(score),
+                'index': int(idx)
+            })
+
         return results
+

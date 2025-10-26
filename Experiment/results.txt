@@ -19,8 +19,6 @@ Retrieval time without binary quantization: 4952.48 ms
 ===== Summary =====
 Embedding array memory (Binary): 7.12 KB
 Embedding array memory (Float):  456.00 KB
-Peak process memory (Binary run): 250428.74 KB
-Peak process memory (Float run):  7410.44 KB
 Retrieval time (Binary):   4765.94 ms
 Retrieval time (Float):    4952.48 ms
 Embedding memory reduction (float/binary): 64.00x
